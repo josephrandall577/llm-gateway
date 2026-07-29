@@ -174,8 +174,26 @@ export function truncate(
  */
 export async function copyToClipboard(text: string): Promise<boolean> {
   try {
-    await navigator.clipboard.writeText(text);
-    return true;
+    if (navigator.clipboard) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {}
+
+  try {
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    textarea.setAttribute('readonly', '');
+    document.body.appendChild(textarea);
+    try {
+      textarea.focus();
+      textarea.select();
+      return document.execCommand('copy');
+    } finally {
+      textarea.remove();
+    }
   } catch {
     return false;
   }

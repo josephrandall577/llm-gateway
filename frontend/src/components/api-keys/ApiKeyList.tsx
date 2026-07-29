@@ -20,7 +20,7 @@ import { Badge } from '@/components/ui/badge';
 import { Pencil, Trash2, Copy, Check, Eye, EyeOff, Loader2, ShieldAlert } from 'lucide-react';
 import { toast } from 'sonner';
 import { ApiKey } from '@/types';
-import { formatDateTime, getActiveStatus, formatUsdCompact } from '@/lib/utils';
+import { copyToClipboard, formatDateTime, getActiveStatus, formatUsdCompact } from '@/lib/utils';
 import { getRawKeyValue } from '@/lib/api/api-keys';
 
 interface ApiKeyListProps {
@@ -73,12 +73,11 @@ export function ApiKeyList({
   const handleCopy = async (apiKey: ApiKey) => {
     const keyValue = await fetchRawKeyValue(apiKey.id);
     if (keyValue) {
-      try {
-        await navigator.clipboard.writeText(keyValue);
+      if (await copyToClipboard(keyValue)) {
         setCopiedId(apiKey.id);
         toast.success(t('toasts.copied'));
         setTimeout(() => setCopiedId(null), 2000);
-      } catch {
+      } else {
         toast.error(t('toasts.copyFailed'));
       }
     }
