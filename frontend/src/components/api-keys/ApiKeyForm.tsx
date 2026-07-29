@@ -5,7 +5,7 @@
 
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { useForm, useWatch } from 'react-hook-form';
 import {
@@ -59,6 +59,7 @@ export function ApiKeyForm({
   createdKey,
 }: ApiKeyFormProps) {
   const t = useTranslations('apiKeys');
+  const createdKeyInputRef = useRef<HTMLInputElement>(null);
 
   // Check if edit mode
   const isEdit = !!apiKey;
@@ -145,7 +146,10 @@ export function ApiKeyForm({
   // Copy API Key
   const handleCopy = async () => {
     if (createdKey?.key_value) {
-      const success = await copyToClipboard(createdKey.key_value);
+      const success = await copyToClipboard(
+        createdKey.key_value,
+        createdKeyInputRef.current ?? undefined
+      );
       if (success) {
         setCopied(true);
         setTimeout(() => setCopied(false), 2000);
@@ -182,6 +186,7 @@ export function ApiKeyForm({
               <Label>{t('form.keyLabel')}</Label>
               <div className="flex gap-2">
                 <Input
+                  ref={createdKeyInputRef}
                   value={createdKey.key_value}
                   readOnly
                   className="font-mono text-sm"

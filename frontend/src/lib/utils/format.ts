@@ -172,23 +172,29 @@ export function truncate(
  * Copy text to clipboard
  * @param text - Text to copy
  */
-export async function copyToClipboard(text: string): Promise<boolean> {
+export async function copyToClipboard(
+  text: string,
+  sourceElement?: HTMLInputElement | HTMLTextAreaElement
+): Promise<boolean> {
   // Preserve the click's transient user activation before awaiting Clipboard API.
   try {
-    const textarea = document.createElement('textarea');
-    textarea.value = text;
-    textarea.style.position = 'fixed';
-    textarea.style.opacity = '0';
-    textarea.setAttribute('readonly', '');
-    const container =
-      document.activeElement?.closest('[role="dialog"]') ?? document.body;
-    container.appendChild(textarea);
+    const element = sourceElement ?? document.createElement('textarea');
+    if (!sourceElement) {
+      element.value = text;
+      element.style.position = 'fixed';
+      element.style.opacity = '0';
+      element.setAttribute('readonly', '');
+      const container =
+        document.activeElement?.closest('[role="dialog"]') ?? document.body;
+      container.appendChild(element);
+    }
     try {
-      textarea.focus();
-      textarea.select();
+      element.focus();
+      element.select();
+      element.setSelectionRange(0, text.length);
       if (document.execCommand('copy')) return true;
     } finally {
-      textarea.remove();
+      if (!sourceElement) element.remove();
     }
   } catch {}
 
