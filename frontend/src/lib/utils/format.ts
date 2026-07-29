@@ -173,13 +173,7 @@ export function truncate(
  * @param text - Text to copy
  */
 export async function copyToClipboard(text: string): Promise<boolean> {
-  try {
-    if (navigator.clipboard) {
-      await navigator.clipboard.writeText(text);
-      return true;
-    }
-  } catch {}
-
+  // Preserve the click's transient user activation before awaiting Clipboard API.
   try {
     const textarea = document.createElement('textarea');
     textarea.value = text;
@@ -190,13 +184,20 @@ export async function copyToClipboard(text: string): Promise<boolean> {
     try {
       textarea.focus();
       textarea.select();
-      return document.execCommand('copy');
+      if (document.execCommand('copy')) return true;
     } finally {
       textarea.remove();
     }
-  } catch {
-    return false;
-  }
+  } catch {}
+
+  try {
+    if (navigator.clipboard) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {}
+
+  return false;
 }
 
 /**

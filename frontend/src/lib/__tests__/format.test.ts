@@ -4,7 +4,7 @@ import { copyToClipboard } from '../utils/format';
 afterEach(() => vi.unstubAllGlobals());
 
 describe('copyToClipboard', () => {
-  it('falls back when Clipboard API fails', async () => {
+  it('uses the synchronous fallback before Clipboard API', async () => {
     const textarea = {
       value: '',
       style: {},
@@ -14,9 +14,10 @@ describe('copyToClipboard', () => {
       remove: vi.fn(),
     };
     const execCommand = vi.fn(() => true);
+    const writeText = vi.fn().mockRejectedValue(new Error('denied'));
 
     vi.stubGlobal('navigator', {
-      clipboard: { writeText: vi.fn().mockRejectedValue(new Error('denied')) },
+      clipboard: { writeText },
     });
     vi.stubGlobal('document', {
       createElement: vi.fn(() => textarea),
@@ -27,5 +28,6 @@ describe('copyToClipboard', () => {
     await expect(copyToClipboard('lgw-test')).resolves.toBe(true);
     expect(textarea.value).toBe('lgw-test');
     expect(execCommand).toHaveBeenCalledWith('copy');
+    expect(writeText).not.toHaveBeenCalled();
   });
 });
