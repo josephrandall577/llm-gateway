@@ -180,7 +180,9 @@ export async function copyToClipboard(text: string): Promise<boolean> {
     textarea.style.position = 'fixed';
     textarea.style.opacity = '0';
     textarea.setAttribute('readonly', '');
-    document.body.appendChild(textarea);
+    const container =
+      document.activeElement?.closest('[role="dialog"]') ?? document.body;
+    container.appendChild(textarea);
     try {
       textarea.focus();
       textarea.select();
