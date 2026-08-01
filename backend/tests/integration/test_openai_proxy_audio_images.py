@@ -144,7 +144,8 @@ async def test_openai_images_edits_proxy_json():
 
 
 @pytest.mark.asyncio
-async def test_openai_images_edits_proxy_multipart():
+@pytest.mark.parametrize("image_field", ["image", "image[]"])
+async def test_openai_images_edits_proxy_multipart(image_field):
     service = _DummyProxyService()
     app.dependency_overrides[get_proxy_service] = lambda: service
     app.dependency_overrides[get_current_api_key] = _make_api_key
@@ -154,7 +155,7 @@ async def test_openai_images_edits_proxy_multipart():
         response = await client.post(
             "/v1/images/edits",
             data={"model": "dall-e-2", "prompt": "Add a hat", "n": "1", "size": "1024x1024"},
-            files={"image": ("image.png", b"fake-image-bytes", "image/png")},
+            files={image_field: ("image.png", b"fake-image-bytes", "image/png")},
         )
 
     assert response.status_code == 200
@@ -162,6 +163,7 @@ async def test_openai_images_edits_proxy_multipart():
     body = service.calls[0]["body"]
     assert body["prompt"] == "Add a hat"
     assert body["model"] == "dall-e-2"
+    assert body["_files"][0]["field"] == image_field
     assert body["_files"][0]["filename"] == "image.png"
     assert body["_files"][0]["data"] == b"fake-image-bytes"
 

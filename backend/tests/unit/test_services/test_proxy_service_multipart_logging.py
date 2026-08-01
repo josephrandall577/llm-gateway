@@ -12,6 +12,7 @@ from app.services.proxy_service import ProxyService
 @pytest.mark.asyncio
 async def test_process_request_sanitizes_multipart_body_and_binary_response():
     now = utc_now()
+    file_data = b"\x89PNG\r\n\x1a\nfake-image"
     model_mapping = ModelMapping(
         requested_model="audio-model",
         strategy="round_robin",
@@ -58,7 +59,7 @@ async def test_process_request_sanitizes_multipart_body_and_binary_response():
                 "field": "file",
                 "filename": "audio.wav",
                 "content_type": "audio/wav",
-                "data": b"fake-audio",
+                "data": file_data,
             }
         ],
     }
@@ -83,5 +84,8 @@ async def test_process_request_sanitizes_multipart_body_and_binary_response():
     service.log_repo.create_initial.assert_awaited()
     service.log_repo.update.assert_awaited()
     log_data = service.log_repo.update.await_args.args[1]
-    assert log_data.request_body["_files"][0]["size"] == len(b"fake-audio")
+    assert log_data.request_body["_files"][0]["size"] == len(file_data)
+    assert log_data.converted_request_body["_files"][0]["size"] == len(file_data)
+    assert "data" not in log_data.converted_request_body["_files"][0]
+    assert fake_client.forward.await_args.kwargs["body"]["_files"][0]["data"] == file_data
     assert log_data.response_body == "[binary data: 8 bytes]"

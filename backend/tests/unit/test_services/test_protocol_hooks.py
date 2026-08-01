@@ -8,6 +8,7 @@ from app.domain.model import ModelMapping
 from app.providers.base import ProviderResponse
 from app.rules.models import CandidateProvider
 from app.domain.kv_store import KeyValueModel
+from app.services.active_requests import active_requests
 from app.services.protocol_hooks import ProtocolConversionHooks
 from app.services.proxy_service import ProxyService
 
@@ -388,6 +389,77 @@ async def test_stream_upstream_failure_after_first_chunk_is_logged_as_failure():
     log_data = service.log_repo.update.await_args.args[1]
     assert log_data.response_status == 504
     assert "Request timeout" in (log_data.error_info or "")
+
+
+@pytest.mark.asyncio
+async def test_stream_initial_error_completes_log_without_consuming_generator():
+    now = utc_now()
+    model_mapping = ModelMapping(
+        requested_model="test-model",
+        strategy="round_robin",
+        matching_rules=None,
+        capabilities=None,
+        is_active=True,
+        created_at=now,
+        updated_at=now,
+    )
+    candidate = CandidateProvider(
+        provider_id=1,
+        provider_name="p-openai",
+        base_url="https://example.com",
+        protocol="openai",
+        api_key="sk-test",
+        target_model="gpt-4o",
+        priority=0,
+        weight=1,
+    )
+
+    service = ProxyService(
+        model_repo=AsyncMock(),
+        provider_repo=AsyncMock(),
+        log_repo=AsyncMock(),
+        protocol_hooks=ProtocolConversionHooks(),
+    )
+    service.log_repo.create_initial.return_value = 46
+    service._resolve_candidates = AsyncMock(
+        return_value=(model_mapping, [candidate], 0, "openai", {})
+    )  # type: ignore[method-assign]
+
+    def forward_stream(**kwargs):
+        async def gen():
+            yield b"", ProviderResponse(status_code=400, error="invalid request")
+
+        return gen()
+
+    fake_client = AsyncMock()
+    fake_client.forward_stream = forward_stream
+
+    with patch(
+        "app.services.proxy_service.convert_request_for_supplier",
+        return_value=("/v1/chat/completions", {"converted": True}),
+    ):
+        with patch(
+            "app.services.proxy_service.get_provider_client",
+            return_value=fake_client,
+        ):
+            initial_response, _stream_gen, _ = await service.process_request_stream(
+                api_key_id=1,
+                api_key_name="k",
+                request_protocol="openai",
+                path="/v1/chat/completions",
+                request_url="/v1/chat/completions",
+                method="POST",
+                headers={},
+                body={"model": "test-model", "stream": True, "messages": []},
+            )
+
+    assert initial_response.status_code == 400
+    service.log_repo.update.assert_awaited_once()
+    log_id, log_data = service.log_repo.update.await_args.args
+    assert log_id == 46
+    assert log_data.is_completed is True
+    assert log_data.response_status == 400
+    assert await active_requests.is_active(46) is False
 
 
 @pytest.mark.asyncio

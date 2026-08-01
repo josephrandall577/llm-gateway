@@ -16,7 +16,7 @@ import anyio
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.common.costs import calculate_cost_from_billing, resolve_billing
-from app.common.errors import NotFoundError, ServiceError
+from app.common.errors import NotFoundError, ServiceError, UpstreamError
 from app.common.protocol_conversion import (
     convert_request_for_supplier,
     convert_response_for_user,
@@ -949,7 +949,9 @@ class ProxyService:
                         supplier_body = hooked_image_supplier_body
                 # Track conversion data for logging
                 conversion_data["supplier_protocol"] = supplier_protocol
-                conversion_data["converted_request_body"] = supplier_body
+                conversion_data["converted_request_body"] = (
+                    self._sanitize_request_body_for_log(supplier_body)
+                )
                 conversion_data["upstream_url"] = build_upstream_url(
                     candidate.base_url, supplier_path
                 )
@@ -1445,7 +1447,9 @@ class ProxyService:
                         supplier_body = hooked_image_supplier_body
                 # Track conversion data for logging
                 stream_conversion_data["supplier_protocol"] = supplier_protocol
-                stream_conversion_data["converted_request_body"] = supplier_body
+                stream_conversion_data["converted_request_body"] = (
+                    self._sanitize_request_body_for_log(supplier_body)
+                )
                 stream_conversion_data["upstream_url"] = build_upstream_url(
                     candidate.base_url, supplier_path
                 )
@@ -1786,6 +1790,39 @@ class ProxyService:
             await active_requests.deregister(log_id)
             raise error from e
 
+        log_info = {
+            "trace_id": trace_id,
+            "retry_count": retry_count,
+            "target_model": final_provider.target_model if final_provider else None,
+            "provider_name": final_provider.provider_name if final_provider else None,
+        }
+
+        if not initial_response.is_success:
+            await self._finalize_initial_log_error(
+                log_id=log_id,
+                request_time=request_time,
+                api_key_id=api_key_id,
+                api_key_name=api_key_name,
+                user_id=user_id,
+                requested_model=requested_model,
+                trace_id=trace_id,
+                is_stream=True,
+                request_protocol=request_protocol,
+                path=path,
+                request_url=request_url,
+                method=method,
+                headers=headers,
+                sanitized_body=sanitized_body,
+                error=UpstreamError(
+                    message=initial_response.error or "Upstream request failed",
+                    status_code=initial_response.status_code,
+                ),
+                record_details=record_details,
+            )
+            await active_requests.deregister(log_id)
+            await stream_gen.aclose()
+            return initial_response, stream_gen, log_info
+
         # Wrap generator to handle logging
         async def wrapped_generator():
             nonlocal input_tokens
@@ -2012,12 +2049,5 @@ class ProxyService:
         return (
             initial_response,
             wrapped_generator(),
-            {
-                "trace_id": trace_id,
-                "retry_count": retry_count,
-                "target_model": final_provider.target_model if final_provider else None,
-                "provider_name": final_provider.provider_name
-                if final_provider
-                else None,
-            },
+            log_info,
         )
