@@ -1,9 +1,13 @@
 """Failure-path coverage for initial request logs."""
 
+import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from starlette.requests import Request
 
+from app.api.proxy.openai import _handle_proxy_request_with_body
 from app.common.errors import ServiceError
 from app.common.time import utc_now
 from app.domain.model import ModelMapping
@@ -130,3 +134,148 @@ async def test_all_provider_failures_still_complete_initial_log():
     assert log_data.response_status == 503
     assert log_data.error_info == "upstream unavailable"
     assert await active_requests.is_active(43) is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_task_cancellation_completes_initial_log(stream):
+    service = ProxyService(
+        model_repo=AsyncMock(),
+        provider_repo=AsyncMock(),
+        log_repo=AsyncMock(),
+    )
+    service.log_repo.create_initial.return_value = 44
+    started = asyncio.Event()
+    finalized = asyncio.Event()
+
+    async def cancel_log(*_args):
+        finalized.set()
+
+    service.log_repo.cancel.side_effect = cancel_log
+
+    async def wait_forever(**_kwargs):
+        started.set()
+        await asyncio.Event().wait()
+
+    service._resolve_candidates = wait_forever  # type: ignore[method-assign]
+    method = service.process_request_stream if stream else service.process_request
+    task = asyncio.create_task(
+        method(
+            api_key_id=1,
+            api_key_name="key",
+            request_protocol="openai",
+            path="/v1/chat/completions",
+            request_url="/v1/chat/completions",
+            method="POST",
+            headers={},
+            body={"model": "test-model", "messages": [], "stream": stream},
+        )
+    )
+    await started.wait()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.wait_for(finalized.wait(), timeout=1)
+
+    service.log_repo.cancel.assert_awaited_once_with(44, "client_disconnected")
+    assert await active_requests.is_active(44) is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_task_cancellation_during_initial_log_creation_completes_log(stream):
+    service = ProxyService(
+        model_repo=AsyncMock(),
+        provider_repo=AsyncMock(),
+        log_repo=AsyncMock(),
+    )
+    creation_started = asyncio.Event()
+    allow_creation = asyncio.Event()
+    finalized = asyncio.Event()
+
+    async def create_initial(_log_data):
+        creation_started.set()
+        await allow_creation.wait()
+        return 45
+
+    async def cancel_log(*_args):
+        finalized.set()
+
+    service.log_repo.create_initial.side_effect = create_initial
+    service.log_repo.cancel.side_effect = cancel_log
+    method = service.process_request_stream if stream else service.process_request
+    task = asyncio.create_task(
+        method(
+            api_key_id=1,
+            api_key_name="key",
+            request_protocol="openai",
+            path="/v1/chat/completions",
+            request_url="/v1/chat/completions",
+            method="POST",
+            headers={},
+            body={"model": "test-model", "messages": [], "stream": stream},
+        )
+    )
+    await creation_started.wait()
+    task.cancel()
+    allow_creation.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.wait_for(finalized.wait(), timeout=1)
+
+    service.log_repo.cancel.assert_awaited_once_with(45, "client_disconnected")
+    assert await active_requests.is_active(45) is False
+
+
+@pytest.mark.asyncio
+async def test_openai_proxy_cancels_work_when_client_disconnects():
+    started = asyncio.Event()
+    stopped = asyncio.Event()
+
+    class BlockingService:
+        async def process_request(self, **_kwargs):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                stopped.set()
+
+    async def receive():
+        return {"type": "http.disconnect"}
+
+    request = Request(
+        {
+            "type": "http",
+            "asgi": {"version": "3.0", "spec_version": "2.3"},
+            "method": "POST",
+            "scheme": "http",
+            "path": "/v1/chat/completions",
+            "raw_path": b"/v1/chat/completions",
+            "query_string": b"",
+            "headers": [],
+            "server": ("testserver", 80),
+            "client": ("testclient", 50000),
+        },
+        receive,
+    )
+    task = asyncio.create_task(
+        _handle_proxy_request_with_body(
+            request,
+            SimpleNamespace(id=1, key_name="key", record_details=True),
+            BlockingService(),
+            "/v1/chat/completions",
+            {"model": "test-model", "messages": []},
+        )
+    )
+    try:
+        await started.wait()
+        await asyncio.wait_for(stopped.wait(), timeout=1)
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        if not task.done():
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task

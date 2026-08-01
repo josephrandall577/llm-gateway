@@ -241,8 +241,7 @@ class ProxyService:
         request_url: str | None,
         method: str,
     ) -> int:
-        """Create a minimal log entry immediately when a request is received.
-        Returns the new log ID for later update."""
+        """Create a minimal log entry and return its ID."""
         log_data = RequestLogCreate(
             request_time=request_time,
             api_key_id=api_key_id,
@@ -258,8 +257,47 @@ class ProxyService:
             is_completed=False,
         )
         async with self._repos() as (_model_repo, _provider_repo, log_repo):
-            log_id = await log_repo.create_initial(log_data)
+            create_task = asyncio.create_task(log_repo.create_initial(log_data))
+            try:
+                log_id = await asyncio.shield(create_task)
+            except asyncio.CancelledError:
+                try:
+                    log_id = await create_task
+                    await log_repo.cancel(log_id, "client_disconnected")
+                except Exception:
+                    logger.exception(
+                        "Failed to cancel disconnected request during log creation"
+                    )
+                raise
         return log_id
+
+    async def _register_active_request(self, log_id: int) -> None:
+        """Track request task and terminalize its log if the task is cancelled."""
+        task = asyncio.current_task()
+        if task is None:
+            return
+
+        def finalize_cancelled(done_task: asyncio.Task) -> None:
+            if not done_task.cancelled():
+                return
+
+            async def finalize() -> None:
+                try:
+                    async with self._repos() as (_model_repo, _provider_repo, log_repo):
+                        await log_repo.cancel(log_id, "client_disconnected")
+                except NotFoundError:
+                    pass
+                except Exception:
+                    logger.exception(
+                        "Failed to cancel disconnected request: log_id=%s", log_id
+                    )
+                finally:
+                    await active_requests.deregister(log_id)
+
+            asyncio.create_task(finalize())
+
+        task.add_done_callback(finalize_cancelled)
+        await active_requests.register(log_id, task)
 
     async def _update_log(
         self, log_id: int, log_data: RequestLogCreate, record_details: bool = True
@@ -680,9 +718,7 @@ class ProxyService:
             request_url=request_url,
             method=method,
         )
-        current_task = asyncio.current_task()
-        if current_task is not None:
-            await active_requests.register(log_id, current_task)
+        await self._register_active_request(log_id)
 
         # 2. Get model mapping
         try:
@@ -1279,9 +1315,7 @@ class ProxyService:
             request_url=request_url,
             method=method,
         )
-        current_task = asyncio.current_task()
-        if current_task is not None:
-            await active_requests.register(log_id, current_task)
+        await self._register_active_request(log_id)
 
         try:
             (
