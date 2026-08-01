@@ -11,6 +11,7 @@ Tests all functionality of the OpenAI client including:
 - Multipart handling
 """
 
+import httpx
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -422,6 +423,53 @@ class TestOpenAIClientResponseModes:
 class TestOpenAIClientMultipart:
     """Test multipart request handling."""
 
+    @pytest.mark.parametrize("image_field", ["image", "image[]"])
+    @pytest.mark.asyncio
+    async def test_multipart_request_uses_async_compatible_stream(self, image_field):
+        client = OpenAIClient()
+        captured = {}
+
+        async def handler(request):
+            captured["content_type"] = request.headers["content-type"]
+            captured["body"] = await request.aread()
+            return httpx.Response(200, json={"data": []})
+
+        transport = httpx.MockTransport(handler)
+        async_client = httpx.AsyncClient
+
+        with patch(
+            "httpx.AsyncClient",
+            side_effect=lambda **kwargs: async_client(
+                timeout=kwargs["timeout"], transport=transport
+            ),
+        ):
+            response = await client.forward(
+                base_url="https://api.openai.com",
+                api_key="sk-test",
+                path="/v1/images/edits",
+                method="POST",
+                headers={},
+                body={
+                    "model": "gpt-image-2",
+                    "prompt": "Edit image",
+                    "_files": [
+                        {
+                            "field": image_field,
+                            "filename": "image.png",
+                            "content_type": "image/png",
+                            "data": b"\x89PNG",
+                        }
+                    ],
+                },
+                target_model="gpt-image-2",
+            )
+
+        assert response.status_code == 200, response.error
+        assert captured["content_type"].startswith("multipart/form-data; boundary=")
+        assert f'name="{image_field}"'.encode() in captured["body"]
+        assert b'filename="image.png"' in captured["body"]
+        assert b"\x89PNG" in captured["body"]
+
     @pytest.mark.asyncio
     async def test_multipart_files_sent_correctly(self):
         """Test: multipart files are sent correctly."""
@@ -508,7 +556,7 @@ class TestOpenAIClientMultipart:
 
             call_args = mock_client.request.call_args
             data = call_args.kwargs["data"]
-            # Data should be list of tuples
+            # HTTPX requires multipart data to be a mapping for AsyncClient.
             data_dict = dict(data)
             assert data_dict["model"] == "whisper-1"
             assert data_dict["language"] == "en"

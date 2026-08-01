@@ -409,7 +409,12 @@ class OpenAIClient(ProviderClient):
 
     def _split_multipart_body(
         self, body: dict[str, Any]
-    ) -> Optional[tuple[list[tuple[str, str]], list[tuple[str, tuple[str, bytes, str]]]]]:
+    ) -> Optional[
+        tuple[
+            dict[str, str | list[str]],
+            list[tuple[str, tuple[str, bytes, str]]],
+        ]
+    ]:
         if not isinstance(body, dict) or "_files" not in body:
             return None
 
@@ -432,14 +437,13 @@ class OpenAIClient(ProviderClient):
         if not files_payload:
             return None
 
-        data_payload: list[tuple[str, str]] = []
+        data_payload: dict[str, str | list[str]] = {}
         for key, value in body.items():
             if key == "_files":
                 continue
             if isinstance(value, list):
-                for item in value:
-                    data_payload.append((key, str(item)))
+                data_payload[key] = [str(item) for item in value]
             elif value is not None:
-                data_payload.append((key, str(value)))
+                data_payload[key] = str(value)
 
         return data_payload, files_payload
